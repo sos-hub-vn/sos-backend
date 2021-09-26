@@ -162,17 +162,23 @@ spec:
                 configMapKeyRef:
                   name: es-config-dev
                   key: ES_JAVA_OPTS
-          readinessProbe:
-            httpGet:
-              scheme: HTTP
-              path: /_cluster/health?local=true
-              port: 9200
-            initialDelaySeconds: 5
           ports:
             - containerPort: 9200
               name: es-http
             - containerPort: 9300
               name: es-transport
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /_cluster/health?local=true
+              port: 9200
+            initialDelaySeconds: 20
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: transport
+            initialDelaySeconds: 20
+            periodSeconds: 10
           volumeMounts:
             - name: es-data
               mountPath: /usr/share/elasticsearch/data

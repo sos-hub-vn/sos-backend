@@ -360,10 +360,10 @@ spec:
           resources:
             limits:
               cpu: 800m
-              memory: 500Mi
+              memory: 1600Mi
             requests:
               cpu: 400m
-              memory: 400Mi
+              memory: 800Mi
           volumeMounts:
             - name: config-volume         
               mountPath: /usr/local/sos/config
@@ -380,9 +380,22 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.name
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /api/v1/systemctl/info
+              port: 8080
+            initialDelaySeconds: 40
+            timeoutSeconds: 20
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /api/v1/systemctl/info
+              port: 8080
+            initialDelaySeconds: 40
+            timeoutSeconds: 20
       imagePullSecrets:
         - name: gitcred
-
 ---
 ##################################################################################################
 #  Sos-backend Load Balancer Service
