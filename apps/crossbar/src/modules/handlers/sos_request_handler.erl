@@ -7,8 +7,10 @@
     get_supporter_info/3,
     get_suggester_info/1,
     is_joined_request/3,
+    is_suggest_request/3,
+    get_suggest_request/3,
     filter_support_types/1,
-    maybe_hide_phone_number/2,
+    maybe_hide_phone_number/3,
     maybe_update_support_status/4,
     maybe_add_bookmarks/2,
     maybe_remove_bookmarks/3,
@@ -16,6 +18,7 @@
     get_my_target_type/3,
     validate_bookmarker_type/2,
     validate_bookmarker_id/2,
+    validate_suggest_targets/2,
     validate_suggest_target_type/2,
     validate_suggest_target_id/2,
     validate_request_type/2,
@@ -106,10 +109,10 @@ maybe_filter_bookmark_by_group(Groups, #{bookmarks := Bookmarks} = SosRequestInf
     end.
     
 
-
-maybe_hide_phone_number(?SHARE_PHONE_NUMBER_TYPE_PUBLIC,RequestInfo) -> RequestInfo;
-
-maybe_hide_phone_number(_,RequestInfo) -> 
+maybe_hide_phone_number(?USER_ROLE_ADMIN, _,RequestInfo) -> RequestInfo;
+maybe_hide_phone_number(?USER_ROLE_OPERATOR, _,RequestInfo) -> RequestInfo;
+maybe_hide_phone_number(_, ?SHARE_PHONE_NUMBER_TYPE_PUBLIC,RequestInfo) -> RequestInfo;
+maybe_hide_phone_number(_, _, RequestInfo) -> 
 
     #{
         contact_info := ContactInfoDb,
@@ -526,6 +529,32 @@ is_joined_request(Type, Id, SosRequestInfo) ->
         end
     end,Supporters).
 
+is_suggest_request(Type, Id, Suggests) ->
+    lists:any(fun(SuggestInfo) ->
+        
+        case SuggestInfo of 
+            #{
+                <<"target_type">> := Type,
+                <<"target_id">> := Id
+            } -> true;
+            _ -> false
+        end
+    end,Suggests).
+
+get_suggest_request(Type, Id, []) -> notfound;
+
+get_suggest_request(Type, Id, [SuggestInfoRaw|Suggests]) ->
+    SuggestInfo = zt_util:map_keys_to_atom(SuggestInfoRaw),
+    case SuggestInfo of 
+        #{
+                target_type := Type,
+                target_id := Id
+        } -> 
+            SuggestInfo;
+        _ -> 
+            get_suggest_request(Type, Id, Suggests)
+    end.
+
 get_supporter_info(?REQUESTER_TYPE_GROUP, GroupId, UserId) -> 
    case  group_db:find(GroupId) of 
    notfound -> {error,notfound};
@@ -613,6 +642,7 @@ build_search_conditions(CurLocation, ReqJson) ->
     SupportTypes = wh_json:get_value(<<"support_types">>, ReqJson, <<>>),
     ObjectStatus = wh_json:get_value(<<"object_status">>, ReqJson, <<>>),
     SupportSstatus = wh_json:get_value(<<"status">>, ReqJson, <<>>),
+    VerifyStatus = wh_json:get_value(<<"verify_status">>, ReqJson, <<>>),
     Keyword = wh_json:get_value(<<"keyword">>, ReqJson, <<>>),
     Distance = zt_util:to_integer(wh_json:get_value(<<"distance">>, ReqJson, 10)),
     SearchRequests = [
@@ -621,6 +651,7 @@ build_search_conditions(CurLocation, ReqJson) ->
         {support_types,SupportTypes},
         {object_status,ObjectStatus},
         {support_status,SupportSstatus},
+        {verify_status,VerifyStatus},
         {keyword,Keyword}
     ],
     DistanceCond = {location,'distance',{CurLocation, Distance, <<"km">>}},
@@ -652,6 +683,9 @@ build_condition(object_status, Val) ->
 build_condition(support_status, Val) -> 
     Vals = zt_util:split_string(Val),
     {<<"status">>,'in',Vals};
+
+build_condition(verify_status, Val) -> 
+    {<<"verify_status">>,Val};
 
 build_condition(keyword, Val) -> 
     {'or',[{<<"subject">>,Val},{<<"description">>,Val}]};
@@ -718,6 +752,18 @@ get_suggester_info(Id) ->
             suggester_name => zt_util:full_name(FirstName, LastName)
         }
     end.
+
+-spec validate_suggest_targets(api_binary(), cb_context:context()) -> cb_context:context().
+validate_suggest_targets(ReqJson, Context) ->
+  Key = <<"targets">>,
+  Val = wh_json:get_value(Key, ReqJson, <<>>),
+  api_util:check_val(Context, Key, Val).
+%   case api_util:check_val(Context, Key, Val) of 
+%     Context -> 
+%         validate_suggest_taget_type_value(Key, Val, Context);
+%     ErrorContext -> 
+%         ErrorContext
+%   end.
 
 -spec validate_suggest_target_type(api_binary(), cb_context:context()) -> cb_context:context().
 validate_suggest_target_type(ReqJson, Context) ->

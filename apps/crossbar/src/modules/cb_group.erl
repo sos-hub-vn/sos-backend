@@ -1,5 +1,6 @@
 -module(cb_group).
 -include("crossbar.hrl").
+-include("app.hrl").
 
 -export([init/0,
          allowed_methods/0,
@@ -52,11 +53,11 @@ init() ->
 -define(PATH_TYPE, <<"types">>).
 -define(PATH_SUGGEST, <<"suggest">>).
 -define(PATH_BOOKMARK, <<"bookmark">>).
-
+-define(PATH_SEARCH, <<"search">>).
 
 allowed_methods() -> [?HTTP_GET, ?HTTP_PUT].
 
-allowed_methods(_Id) -> [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
+allowed_methods(_Path) -> [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 
 allowed_methods(_Id,?PATH_VERIFY) -> [?HTTP_POST];
 
@@ -70,7 +71,7 @@ allowed_methods(_Id,?PATH_BOOKMARK) -> [?HTTP_GET].
 resource_exists() -> true.
 
 -spec resource_exists(path_token()) -> true.
-resource_exists(_Id) -> true.
+resource_exists(_Path) -> true.
 
 -spec resource_exists(path_token(),path_token()) -> true.
 resource_exists(_Id,?PATH_BOOKMARK) -> true;
@@ -84,6 +85,8 @@ authenticate(Context) ->
     app_util:oauth2_authentic(Token, Context).
 
 -spec authenticate(cb_context:context(), path_token()) -> boolean().
+authenticate(_Context, ?PATH_SEARCH) ->true;
+
 authenticate(Context, _Path) ->
     Token = cb_context:auth_token(Context),
     app_util:oauth2_authentic(Token, Context).
@@ -101,19 +104,21 @@ authorize_verb(Context, ?HTTP_GET) ->
     Role = cb_context:role(Context),
     authorize_util:check_role(Role,?USER_ROLE_OPERATOR_GE);
 
-authorize_verb(Context, ?HTTP_PUT) -> true.
+authorize_verb(_Context, ?HTTP_PUT) -> true.
 
 -spec authorize(cb_context:context(), path_token()) -> boolean().
 authorize(Context, Path) ->
     authorize_verb(Context, Path, cb_context:req_verb(Context)).
 
-authorize_verb(Context, Path, ?HTTP_GET) -> true;
+authorize_verb(_Context, _Path, ?HTTP_GET) -> true;
 
-authorize_verb(Context, Path, ?HTTP_POST) ->
+authorize_verb(_Context, ?PATH_SEARCH, ?HTTP_POST) -> true;
+
+authorize_verb(Context, _Path, ?HTTP_POST) ->
     Role = cb_context:role(Context),
     authorize_util:check_role(Role,?USER_ROLE_USER_GE);
 
-authorize_verb(Context, Path, ?HTTP_DELETE) ->
+authorize_verb(Context, _Path, ?HTTP_DELETE) ->
     Role = cb_context:role(Context),
     authorize_util:check_role(Role,?USER_ROLE_USER_GE).
 
@@ -126,16 +131,16 @@ authorize(Context, _Id, ?PATH_BOOKMARK) ->
     Role = cb_context:role(Context),
     authorize_util:check_role(Role,?USER_ROLE_USER_GE);
 
-authorize(Context, Id, ?PATH_SUGGEST = Path) ->
+authorize(Context, _Id, ?PATH_SUGGEST = Path) ->
     Role = cb_context:role(Context),
     authorize_verb(Context, Role, Path, cb_context:req_verb(Context));
 
 authorize(_Context, _Id, ?PATH_MEMBER) -> true.
 
-authorize_verb(Context, Role, ?PATH_SUGGEST, ?HTTP_GET) -> 
+authorize_verb(_Context, Role, ?PATH_SUGGEST, ?HTTP_GET) -> 
     authorize_util:check_role(Role,?USER_ROLE_USER_GE);
 
-authorize_verb(Context, Role, ?PATH_SUGGEST, _) -> 
+authorize_verb(_Context, Role, ?PATH_SUGGEST, _) -> 
     authorize_util:check_role(Role,?USER_ROLE_OPERATOR_GE).
 
 -spec validate(cb_context:context()) -> cb_context:context().
@@ -195,7 +200,6 @@ handle_get({Req, Context}, Id) ->
                                {fun cb_context:set_resp_error_code/2, 404}])}
     end.
 
-% sos_request_db:find_by_conditions([{<<"suggest_info.target_type">>,<<"group">>},{<<"suggest_info.target_id">>,<<"group372dfa628f08303797acb05751ddfc9a">>}], [], 5, 0).
 % sos_request_db:find_by_conditions([{<<"bookmarks#bookmarker_type">>,<<"group">>},{<<"bookmarks#bookmarker_id">>,<<"group372dfa628f08303797acb05751ddfc9a">>}], [], 5, 0).
 handle_get({Req, Context}, Id, ?PATH_BOOKMARK) ->
     case group_db:find(Id) of
@@ -230,8 +234,23 @@ handle_get({Req, Context}, Id, ?PATH_SUGGEST) ->
             PropQueryJson = wh_json:to_proplist(QueryJson),
             SosRequests = 
                 sos_request_db:find_by_conditions([
-                    {<<"suggest_info.target_type">>,?OBJECT_TYPE_GROUP},
-                    {<<"suggest_info.target_id">>,Id}
+                    {'or',
+                        [
+                            % {
+                            %     'and',[
+                            %         {<<"suggests#target_type">>,?OBJECT_TYPE_GROUP},
+                            %         {<<"suggests#target_id">>,Id}
+                            %     ]
+                            % },
+                            {
+                                'and',[
+                                    {<<"suggests.target_type">>,?OBJECT_TYPE_GROUP},
+                                    {<<"suggests.target_id">>,Id}
+                                ]
+                            }
+
+                        ]
+                    }
                 ], PropQueryJson, Limit, Offset),
           {Req,
            cb_context:setters(Context,
@@ -252,22 +271,78 @@ handle_put(Context) ->
     UserId = cb_context:user_id(Context),
     UserInfo = user_db:find(UserId),
     UserInfoFiltered = maps:with([phone_number, id, first_name, last_name],UserInfo),
-    InfoBase = get_info(ReqJson,UserId),
-    AdminInfo = maps:merge(UserInfoFiltered,#{
-        role => <<"admin">>
-    }),
-    Info = maps:merge(InfoBase, #{
-        id => <<"group", Uuid/binary>>,
-        members => [AdminInfo]
-    }),
-   
-    group_db:save(Info),
-    cb_context:setters(Context,
-                       [{fun cb_context:set_resp_data/2, Info},
-                        {fun cb_context:set_resp_status/2, success}]).
-
+    ContactInfo = zt_util:to_map(wh_json:get_value(<<"contact_info">>, ReqJson,[])),
+    PhoneNumber = maps:get(phone_number, ContactInfo, <<>>),
+    Role = cb_context:role(Context),
+    case otp_handler:otp_valid(Role, <<>>,PhoneNumber,wh_json:get_value(<<"confirm_code">>, ReqJson,<<>>)) of 
+    true -> 
+        InfoBase = get_info(ReqJson,UserId),
+        AdminInfo = maps:merge(UserInfoFiltered,#{
+            role => ?GROUP_USER_ROLE_ADMIN
+        }),
+        Info = maps:merge(InfoBase, #{
+            id => <<"group", Uuid/binary>>,
+            contact_info => ContactInfo,
+            members => [AdminInfo]
+        }),
+    
+        group_db:save(Info),
+        cb_context:setters(Context,
+                        [{fun cb_context:set_resp_data/2, Info},
+                            {fun cb_context:set_resp_status/2, success}]);
+    _ -> 
+        cb_context:setters(Context,[
+                {fun cb_context:set_resp_error_msg/2, <<"otp_invalid">>},
+                {fun cb_context:set_resp_status/2, <<"error">>},
+                {fun cb_context:set_resp_error_code/2, 400}
+            ])
+    end.
 
 -spec handle_post(cb_context:context(), path_token()) -> cb_context:context().
+handle_post(Context, ?PATH_SEARCH) ->
+    try
+        lager:info("group search: ~n",[]),
+        ReqJson =  cb_context:req_json(Context),
+        Long = zt_util:to_str(wh_json:get_value(<<"long_position">>, ReqJson, <<"0.0">>)),
+        Lat = zt_util:to_str(wh_json:get_value(<<"lat_position">>, ReqJson, <<"0.0">>)),
+        CurrentLocation  =  Lat ++ "," ++ Long,
+        Unit = <<"km">>,
+        SortCondsList = wh_json:get_value(<<"sorts">>, ReqJson, [[{<<"sort_distance">>,asc}]]),
+        SortConds = group_handler:deformat_sorts(SortCondsList, zt_util:to_bin(CurrentLocation), Unit),
+        Conds = group_handler:build_search_conditions(CurrentLocation, ReqJson),
+        lager:info("Sort: ~p ~n Conds: ~p ~n",[ SortConds, Conds]),
+        QueryJson = cb_context:query_string(Context),
+        Limit = zt_util:to_integer(wh_json:get_value(<<"limit">>, QueryJson, ?DEFAULT_LIMIT)),
+        Offset = zt_util:to_integer(wh_json:get_value(<<"offset">>, QueryJson, ?DEFAULT_OFFSET)),
+        FinalConds = Conds,
+        lager:debug("search FinalConds: ~p~n",[FinalConds]),
+        %FinalSortConds = [{<<"sort_created_time">>,asc}|SortConds],
+        FinalSortConds = SortConds,
+        lager:debug("search FinalSortConds: ~p~n",[FinalSortConds]),
+        {Total, Groups} = group_db:find_count_by_conditions(FinalConds, FinalSortConds, Limit, Offset),
+        lager:info("Total Request  ~p found ~n",[Total]),
+
+        FilteredGroups = 
+            lists:map(fun (Info) ->
+                get_sub_fields_search(Info)
+            end,Groups),
+        PropsGroupsWithTotal = 
+                #{
+                    total => Total,
+                    groups => FilteredGroups
+                },
+        cb_context:setters(Context
+                           ,[{fun cb_context:set_resp_data/2, PropsGroupsWithTotal}
+                             ,{fun cb_context:set_resp_status/2, 'success'}
+                            ])
+    catch
+        _:_ -> cb_context:setters(Context
+                                  ,[{fun cb_context:set_resp_status/2, 'error'}
+                                    ,{fun cb_context:set_resp_error_code/2, 400}
+                                    ,{fun cb_context:set_resp_error_msg/2, <<"Bad request">>}
+                                   ])
+    end;
+
 handle_post(Context, Id) ->
     case group_db:find(Id) of 
         notfound -> 
@@ -285,40 +360,58 @@ handle_post(Context, Id) ->
             detail_info := DetailInfoDb,
             description := DescriptionDb
         } = InfoDb -> 
-         ReqJson =  cb_context:req_json(Context),
+        UserId = cb_context:user_id(Context),
+        case group_handler:is_group_admin(Id,UserId) of 
+            true -> 
+                ReqJson =  cb_context:req_json(Context),
+                
+                NewContactInfo = 
+                    case wh_json:get_value(<<"contact_info">>, ReqJson, <<>>) of
+                        <<>> ->  ContactInfoDb;
+                        ContactInfoProps -> 
+                            zt_util:to_map(ContactInfoProps)
+                    end,
+                PhoneNumberdb = maps:get(<<"phone_number">>, ContactInfoDb, <<>>),
+                NewPhoneNumber = maps:get(<<"phone_number">>, NewContactInfo, <<>>),
+                Role = cb_context:role(Context),
+                case otp_handler:otp_valid(Role,PhoneNumberdb,NewPhoneNumber,wh_json:get_value(<<"confirm_code">>, ReqJson, <<>>)) of 
+                    true -> 
+                        NewDetailInfo = 
+                            case wh_json:get_value(<<"detail_info">>, ReqJson, <<>>) of
+                                <<>> ->  DetailInfoDb;
+                                DetailInfoProps -> zt_util:to_map(DetailInfoProps)
+                            end,
 
-         NewContactInfo = 
-            case wh_json:get_value(<<"contact_info">>, ReqJson, <<>>) of
-                <<>> ->  ContactInfoDb;
-                ContactInfoProps -> zt_util:to_map(ContactInfoProps)
-            end,
-
-        NewDetailInfo = 
-            case wh_json:get_value(<<"detail_info">>, ReqJson, <<>>) of
-                <<>> ->  DetailInfoDb;
-                DetailInfoProps -> zt_util:to_map(DetailInfoProps)
-            end,
-
-         NewInfo = 
-            maps:merge(InfoDb, #{
-                name => wh_json:get_value(<<"name">>, ReqJson,NameDb),
-                location => wh_json:get_value(<<"location">>, ReqJson, LocationDb),
-                avatar => wh_json:get_value(<<"avatar">>, ReqJson, AvatarDb),
-                address_info => province_handler:get_address_detail_info(wh_json:get_value(<<"address_info">>, ReqJson,AddressInfoDb)),
-                contact_info => NewContactInfo,
-                detail_info => NewDetailInfo,
-                description => wh_json:get_value(<<"description">>, ReqJson,DescriptionDb),         
-                updated_time => zt_datetime:get_now(),
-                updated_by => cb_context:user_id(Context)
-            }),
-         group_db:save(NewInfo),
-         cb_context:setters(Context
-                            ,[{fun cb_context:set_resp_data/2, NewInfo}
-                              ,{fun cb_context:set_resp_status/2, 'success'}
-                             ])            
+                        NewInfo = 
+                            maps:merge(InfoDb, #{
+                                name => wh_json:get_value(<<"name">>, ReqJson,NameDb),
+                                location => wh_json:get_value(<<"location">>, ReqJson, LocationDb),
+                                avatar => wh_json:get_value(<<"avatar">>, ReqJson, AvatarDb),
+                                address_info => province_handler:get_address_detail_info(wh_json:get_value(<<"address_info">>, ReqJson,AddressInfoDb)),
+                                contact_info => NewContactInfo,
+                                detail_info => NewDetailInfo,
+                                description => wh_json:get_value(<<"description">>, ReqJson,DescriptionDb),         
+                                updated_time => zt_datetime:get_now(),
+                                updated_by => cb_context:user_id(Context)
+                            }),
+                        group_db:save(NewInfo),
+                        cb_context:setters(Context
+                                            ,[{fun cb_context:set_resp_data/2, NewInfo}
+                                            ,{fun cb_context:set_resp_status/2, 'success'}
+                                            ]);
+                    false -> 
+                        cb_context:setters(Context,[{fun cb_context:set_resp_error_msg/2, <<"otp_invalid">>},
+                            {fun cb_context:set_resp_status/2, <<"error">>},
+                            {fun cb_context:set_resp_error_code/2, 400}]
+                            )
+                end;
+            false ->
+                cb_context:setters(Context,[{fun cb_context:set_resp_error_msg/2, <<"forbidden">>},
+                                            {fun cb_context:set_resp_status/2, <<"error">>},
+                                            {fun cb_context:set_resp_error_code/2, 403}]
+                                    )
+        end                        
     end.
-
-
 
 -spec handle_post(cb_context:context(), path_token(), path_token()) -> cb_context:context().
 handle_post(Context, Id,?PATH_VERIFY) ->
@@ -366,31 +459,41 @@ handle_post(Context, Id,?PATH_MEMBER) ->
             );
         #{
             members := MembersDb
-        } = InfoDb -> 
-         ReqJson =  cb_context:req_json(Context),
-         Members = wh_json:get_value(<<"members">>, ReqJson, []),
-         FilteredMembers = 
-         lists:filtermap(fun(MemberProps) -> 
-                lager:debug("MemberProps: ~p~n",[MemberProps]),
-                MemberMap = zt_util:map_keys_to_atom(zt_util:to_map(MemberProps)),
-                UserId = maps:get(id,MemberMap),
-                UserInfo = user_db:find(UserId),
-                UserInfoFiltered = maps:with([phone_number, id, first_name, last_name],UserInfo),
-                MemberInfo = maps:merge(UserInfoFiltered,#{
-                    role => maps:get(role,MemberMap,<<>>)
-                }),
-                {true, MemberInfo}
-         end,Members),
-         lager:debug("FilteredMembers: ~p~n",[FilteredMembers]),
-         NewMembers = zt_util:merge_list_maps(id,MembersDb ++ FilteredMembers),
-         NewInfo = maps:merge(InfoDb, #{
-             members => NewMembers
-         }),
-         group_db:save(NewInfo),
-         cb_context:setters(Context
-                            ,[{fun cb_context:set_resp_data/2, NewInfo}
-                              ,{fun cb_context:set_resp_status/2, 'success'}
-                             ])            
+        } = InfoDb ->
+            UserId = cb_context:user_id(Context),
+            case group_handler:is_group_admin(Id, UserId) of 
+                true ->
+                    ReqJson =  cb_context:req_json(Context),
+                    Members = wh_json:get_value(<<"members">>, ReqJson, []),
+                    FilteredMembers = 
+                    lists:filtermap(fun(MemberProps) -> 
+                            lager:debug("MemberProps: ~p~n",[MemberProps]),
+                            MemberMap = zt_util:map_keys_to_atom(zt_util:to_map(MemberProps)),
+                            GroupUserId = maps:get(id,MemberMap),
+                            UserInfo = user_db:find(GroupUserId),
+                            UserInfoFiltered = maps:with([phone_number, id, first_name, last_name],UserInfo),
+                            MemberInfo = maps:merge(UserInfoFiltered,#{
+                                role => maps:get(role,MemberMap,<<>>)
+                            }),
+                            {true, MemberInfo}
+                    end,Members),
+                    lager:debug("FilteredMembers: ~p~n",[FilteredMembers]),
+                    NewMembers = zt_util:merge_list_maps(id,MembersDb ++ FilteredMembers),
+                    NewInfo = maps:merge(InfoDb, #{
+                        members => NewMembers
+                    }),
+                    group_db:save(NewInfo),
+                    cb_context:setters(Context
+                                        ,[{fun cb_context:set_resp_data/2, NewInfo}
+                                        ,{fun cb_context:set_resp_status/2, 'success'}
+                                        ]);
+                false ->
+                    cb_context:setters(Context,
+                                            [{fun cb_context:set_resp_error_msg/2, <<"forbidden">>},
+                                                {fun cb_context:set_resp_status/2, <<"error">>},
+                                                {fun cb_context:set_resp_error_code/2, 403}]
+                                        )
+            end
     end.
 
 handle_delete(Context, Id, ?PATH_MEMBER) ->
@@ -405,28 +508,41 @@ handle_delete(Context, Id, ?PATH_MEMBER) ->
         #{
             members := MembersDb
         } = InfoDb -> 
-         ReqJson =  cb_context:req_json(Context),
-         Members = wh_json:get_value(<<"members">>, ReqJson, []),
-         MembersMapDb = zt_util:to_map_with_key(<<"id">>,MembersDb),
-         FilteredMembersMap = 
-            lists:foldl(fun(MemberProps, FilteredMembersMapDb) -> 
-                    MemberMap = zt_util:to_map(MemberProps),
-                    UserId = maps:get(id,MemberMap),
-                    maps:remove(UserId, FilteredMembersMapDb)
-            end,MembersMapDb,Members),
-         NewMembers = maps:values(FilteredMembersMap),
-         NewInfo = maps:merge(InfoDb, #{
-             members => NewMembers
-         }),
-         group_db:save(NewInfo),
-         cb_context:setters(Context
-                            ,[{fun cb_context:set_resp_data/2, NewInfo}
-                              ,{fun cb_context:set_resp_status/2, 'success'}
-                             ])            
+
+        UserId = cb_context:user_id(Context),
+        case group_handler:is_group_admin(Id, UserId) of 
+            true ->
+                    ReqJson =  cb_context:req_json(Context),
+                    Members = wh_json:get_value(<<"members">>, ReqJson, []),
+                    MembersMapDb = zt_util:to_map_with_key(<<"id">>,MembersDb),
+                    FilteredMembersMap = 
+                        lists:foldl(fun(MemberProps, FilteredMembersMapDb) -> 
+                                MemberMap = zt_util:to_map(MemberProps),
+                                UserId = maps:get(id,MemberMap),
+                                maps:remove(UserId, FilteredMembersMapDb)
+                        end,MembersMapDb,Members),
+                    NewMembers = maps:values(FilteredMembersMap),
+                    NewInfo = maps:merge(InfoDb, #{
+                        members => NewMembers
+                    }),
+                    group_db:save(NewInfo),
+                    cb_context:setters(Context
+                                        ,[{fun cb_context:set_resp_data/2, NewInfo}
+                                        ,{fun cb_context:set_resp_status/2, 'success'}
+                                        ]);
+            false -> 
+                cb_context:setters(Context,[
+                        {fun cb_context:set_resp_error_msg/2, <<"forbidden">>},
+                        {fun cb_context:set_resp_status/2, <<"error">>},
+                        {fun cb_context:set_resp_error_code/2, 403}
+                    ])
+        end
     end.
+
 -spec handle_delete(cb_context:context(), path_token()) -> cb_context:context().
 
 handle_delete(Context, Id) ->
+
     case group_db:find(Id) of 
         notfound -> 
             cb_context:setters(Context,
@@ -435,14 +551,23 @@ handle_delete(Context, Id) ->
                 {fun cb_context:set_resp_error_code/2, 404}]
             );
         _ -> 
-            
-            group_db:del_by_id(Id),
-            Resp = #{
-                id => Id
-            },
-            cb_context:setters(Context,
-                       [{fun cb_context:set_resp_data/2, Resp},
-                        {fun cb_context:set_resp_status/2, success}])
+            UserId = cb_context:user_id(Context),
+            case group_handler:is_group_admin(Id, UserId) of 
+                true -> 
+                    group_db:del_by_id(Id),
+                    Resp = #{
+                        id => Id
+                    },
+                    cb_context:setters(Context,
+                            [{fun cb_context:set_resp_data/2, Resp},
+                                {fun cb_context:set_resp_status/2, success}]);
+                false ->
+                    cb_context:setters(Context,[
+                            {fun cb_context:set_resp_error_msg/2, <<"forbidden">>},
+                            {fun cb_context:set_resp_status/2, <<"error">>},
+                            {fun cb_context:set_resp_error_code/2, 403}
+                        ])
+            end
     end.
 
 permissions() ->
@@ -454,7 +579,6 @@ permissions() ->
 get_info(ReqJson,UserId) -> 
     Type = zt_util:normalize_string(wh_json:get_value(<<"type">>, ReqJson)),
     AddressInfo = province_handler:get_address_detail_info(wh_json:get_value(<<"address_info">>, ReqJson,[])),
-
     CreateTime  =  zt_datetime:get_now(),
     #{
         type => Type,
@@ -462,7 +586,6 @@ get_info(ReqJson,UserId) ->
         location => wh_json:get_value(<<"location">>, ReqJson, <<"0.0,0.0">>),
         avatar => wh_json:get_value(<<"avatar">>, ReqJson, <<>>),
         address_info => AddressInfo,
-        contact_info => zt_util:to_map(wh_json:get_value(<<"contact_info">>, ReqJson,[])),
         detail_info => filter_detail_info(zt_util:to_map(wh_json:get_value(<<"detail_info">>, ReqJson,[]))),
         admin_id => <<>>,
         members => [],
@@ -510,6 +633,20 @@ validate_request(Context, _Verb) ->
 validate_request(_Id, Context, ?HTTP_GET) ->
     cb_context:setters(Context, [{fun cb_context:set_resp_status/2, success}]);
 
+validate_request(?PATH_SEARCH, Context, ?HTTP_POST = _Verb) ->
+
+    ReqJson = cb_context:req_json(Context),
+    Context1 = cb_context:setters(Context, [{fun cb_context:set_resp_status/2, success}]),
+    ValidateFuns = [
+                    fun sos_request_handler:validate_search_long/2,
+                    fun sos_request_handler:validate_search_lat/2
+    ],
+    lists:foldl(fun (F, C) ->
+                        F(ReqJson, C)
+                end,
+                Context1,
+                ValidateFuns);
+
 validate_request(_Id, Context, ?HTTP_POST = _Verb) ->
     cb_context:setters(Context, [{fun cb_context:set_resp_status/2, success}]);
 
@@ -537,7 +674,8 @@ validate_request(_Id, ?PATH_MEMBER, Context, ?HTTP_POST) ->
     ReqJson = cb_context:req_json(Context),
     Context1 = cb_context:setters(Context, [{fun cb_context:set_resp_status/2, success}]),
     ValidateFuns = [
-                    fun group_handler:validate_add_members/2],
+                    fun group_handler:validate_add_members/2
+                ],
                    
     lists:foldl(fun (F, C) ->
                         F(ReqJson, C)
@@ -567,9 +705,13 @@ validate_request(_Id, ?PATH_BOOKMARK, Context, _) ->
 validate_request(_Id, _Path, Context, _Verb) ->
     Context.
 
-get_sub_fields(Group) ->
-    Res = maps:to_list(Group),
-    proplists:substitute_aliases([], Res).
+get_sub_fields(Info) ->
+    Fields =  [distance],
+    maps:without(Fields, Info).
+
+get_sub_fields_search(Info)->
+    Fields =  [members, created_by, updated_by, updated_time,suggest_info],
+    maps:without(Fields, Info).
 
 errors() -> 
   Path = <<"groups">>,
