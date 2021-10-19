@@ -1,9 +1,15 @@
 -module(configuration_db).
 
--export([save/1,del/1,del_by_id/1,
-        find/1,find_all/2,find_all/0,
-        find_by_group/1,find_by_key/1,find_by_type/1,
-        find_by_restaurant_id/1,
+-export([save/1,  
+        del/1,
+        del_by_id/1,
+        del_by_group/1,
+        find/1,
+        find_all/2,
+        find_all/0,
+        find_by_group/1,
+        find_by_key/1,
+        find_by_type/1,
         find_by_conditions/4]).
 
 %% DEBUG
@@ -31,6 +37,10 @@ del(Configuration) ->
 del_by_id(Id) ->
   sumo:delete(configuration_doc, Id).
 
+
+del_by_group(Group) ->
+  sumo:delete_by(configuration_doc, [{group,Group}]).
+
 %% @doc Finds an vehicel, given the ID.
 -spec find(binary()) -> configuration_doc:configuration()|notfound.
 find(Id) ->
@@ -47,10 +57,6 @@ find_by_key(Key) ->
 -spec find_by_type(binary()) -> configuration_doc:configuration()|notfound.
 find_by_type(Type) ->
   sumo:find_by(configuration_doc, [{type,Type}]).
-
-  -spec find_by_restaurant_id(binary()) -> configuration_doc:configuration()|notfound.
-find_by_restaurant_id(Restaurant_id) ->
-  sumo:find_by(configuration_doc, [{restaurant_id,Restaurant_id}]).
 
 -spec find_all() -> [configuration_doc:configuration()].
 find_all() ->
