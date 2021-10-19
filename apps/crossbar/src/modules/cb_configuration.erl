@@ -299,6 +299,7 @@ get_configuration_info(ReqJson) ->
 		key => Key,
 		value => Value,
 		value_obj => maps:from_list(ValueObj),
+		order => zt_util:to_integer(wh_json:get_value(<<"order">>,ReqJson,1000)),
 	  	content_type => ContentType,
         type => Type
 	}.
