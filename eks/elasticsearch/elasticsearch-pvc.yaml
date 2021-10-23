@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-elasticsearch-prod-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-elasticsearch-sc
+  resources:
+    requests:
+      storage: 10Gi
