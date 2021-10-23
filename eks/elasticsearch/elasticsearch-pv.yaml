@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-elasticsearch-prod-pv
+spec:
+  capacity:
+    storage: 30Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-elasticsearch-sc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-029d52a29be0435c4

@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: 
+  name: sos-backend-prod 
+  labels:   
+    app: sos-backend-prod
+spec: 
+  serviceName: "sos-backend-prod-svc"
+  replicas: 2
+  selector:
+    matchLabels:     
+      app: sos-backend-prod
+  template:   
+    metadata:     
+      labels:       
+        app: sos-backend-prod
+    spec:
+      securityContext:
+        runAsUser: 0
+      initContainers:
+        - name: file-permissions
+          image: alpine
+          command: [ 'chown','-R', 'root:root', '/usr/local/sos/data' ]
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /usr/local/sos/data
+              name: sos-backend-data-volume
+          securityContext:
+            privileged: true
+            runAsUser: 0
+      volumes:       
+        - name: config-volume
+          configMap:         
+            name: sos-backend-prod-config
+        - name: sos-backend-data-volume
+          persistentVolumeClaim:
+            claimName: efs-sos-backend-prod-pvc
+      containers:     
+        - name: sos-backend-prod      
+          image: ghcr.io/sos-hub-vn/sos-backend:<<version>>
+          #image: nghiaembt/sos-backend:0.0.4
+          imagePullPolicy: Always
+          ports:       
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: 800m
+              memory: 1600Mi
+            requests:
+              cpu: 400m
+              memory: 800Mi
+          volumeMounts:
+            - name: config-volume         
+              mountPath: /usr/local/sos/config
+            - name: sos-backend-data-volume         
+              mountPath: /usr/local/sos/data
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command:
+            - "ash"
+          args:  ["config/run-sos-backend.sh","$(POD_NAME)"]
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          # readinessProbe:
+          #   httpGet:
+          #     scheme: HTTP
+          #     path: /api/v1/systemctl/info
+          #     port: 8080
+          #   initialDelaySeconds: 40
+          #   timeoutSeconds: 20
+          # livenessProbe:
+          #   httpGet:
+          #     scheme: HTTP
+          #     path: /api/v1/systemctl/info
+          #     port: 8080
+          #   initialDelaySeconds: 40
+          #   timeoutSeconds: 20
+      imagePullSecrets:
+        - name: gitcred
