@@ -49,11 +49,11 @@ jobs:
        env:
          KUBE_CONFIG_DATA: ${{ secrets.AWS_KUBE_CONFIG }}
        with:
-         args: apply -f ./eks/backend/deploy-prod.yaml --namespace=backend
+         args: apply -f ./eks/backend/deploy-prod.yaml
         
       - name: verify deployment
         uses: kodermax/kubectl-aws-eks@master
         env:
           KUBE_CONFIG_DATA: ${{ secrets.AWS_KUBE_CONFIG }}
         with:
-          args: rollout status statefulset/sos-backend-prod --namespace=backend
+          args: rollout status statefulset/sos-backend-prod
