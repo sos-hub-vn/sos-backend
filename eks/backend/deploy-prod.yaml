@@ -380,20 +380,20 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.name
-          readinessProbe:
-            httpGet:
-              scheme: HTTP
-              path: /api/v1/systemctl/info
-              port: 8080
-            initialDelaySeconds: 40
-            timeoutSeconds: 20
-          livenessProbe:
-            httpGet:
-              scheme: HTTP
-              path: /api/v1/systemctl/info
-              port: 8080
-            initialDelaySeconds: 40
-            timeoutSeconds: 20
+          # readinessProbe:
+          #   httpGet:
+          #     scheme: HTTP
+          #     path: /api/v1/systemctl/info
+          #     port: 8080
+          #   initialDelaySeconds: 40
+          #   timeoutSeconds: 20
+          # livenessProbe:
+          #   httpGet:
+          #     scheme: HTTP
+          #     path: /api/v1/systemctl/info
+          #     port: 8080
+          #   initialDelaySeconds: 40
+          #   timeoutSeconds: 20
       imagePullSecrets:
         - name: gitcred
 ---
