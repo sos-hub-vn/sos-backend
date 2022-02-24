@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-elasticsearch-prod-pv
+spec:
+  capacity:
+    storage: 30Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-elasticsearch-sc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-029d52a29be0435c4
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-elasticsearch-prod-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-elasticsearch-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+spec:
+  serviceName: "elasticsearch-hl-svc"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      volumes:     
+        - name: es-data-volume
+          persistentVolumeClaim:
+            claimName: efs-elasticsearch-prod-pvc
+      containers:
+      - name: elasticsearch
+        image: elasticsearch:7.14.2
+        resources:
+            limits:
+              cpu: 2000m
+            requests:
+              cpu: 500m
+        ports:
+        - containerPort: 9200
+          name: rest
+          protocol: TCP
+        - containerPort: 9300
+          name: inter-node
+          protocol: TCP
+        volumeMounts:
+        - name: es-data-volume
+          mountPath: /usr/share/elasticsearch/data-cluster
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: cluster.name
+            value: elasticsearch-cluster
+          - name: node.name
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: discovery.zen.ping.unicast.hosts
+            value: "elasticsearch-0.elasticsearch-hl-svc,elasticsearch-1.elasticsearch-hl-svc,elasticsearch-2.elasticsearch-hl-svc"
+          - name: discovery.zen.minimum_master_nodes
+            value: "2"
+          - name: cluster.initial_master_nodes
+            value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+          - name: path.data
+            value: /usr/share/elasticsearch/data-cluster/data/$(POD_NAME)
+          - name: ES_JAVA_OPTS
+            value: "-Xms512m -Xmx512m"
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data-cluster"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: es-data-volume
+          mountPath: /usr/share/elasticsearch/data-cluster
+      - name: increase-vm-max-map
+        image: busybox
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      - name: increase-fd-ulimit
+        image: busybox
+        command: ["sh", "-c", "ulimit -n 65536"]
+        securityContext:
+          privileged: true
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: elasticsearch-hl-svc
+  labels:
+    app: elasticsearch-hl-svc
+spec:
+  selector:
+    app: elasticsearch
+  clusterIP: None
+  ports:
+    - port: 9200
+      name: rest
+    - port: 9300
+      name: inter-node
